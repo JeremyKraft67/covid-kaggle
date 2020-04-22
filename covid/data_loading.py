@@ -33,6 +33,9 @@ from tqdm import tqdm
 from transformers import *
 import warnings
 
+from covid import clean_data_helper_functions as clean_hf
+from covid import BM25_helper_functions as BM25_hf
+
 nltk.download('stopwords')
 nltk.download('punkt')
 
@@ -43,199 +46,6 @@ nltk.download('punkt')
 
 
 
-def format_name(author):
-    middle_name = " ".join(author['middle'])
-    if author['middle']:
-        return " ".join([author['first'], middle_name, author['last']])
-    else:
-        return " ".join([author['first'], author['last']])
-def format_authors(authors):
-    name_ls = []
-    for author in authors:
-        name = format_name(author)
-        name_ls.append(name)
-    return ", ".join(name_ls)
-def format_body(body_text):
-    texts = [(di['section'], di['text']) for di in body_text]
-    texts_di = {di['section']: "" for di in body_text}
-    for section, text in texts:
-        texts_di[section] += text
-    body = ""
-    for section, text in texts_di.items():
-        body += section
-        body += "\n\n"
-        body += text
-        body += "\n\n"
-    return body
-def load_files(dirname):
-    filenames = os.listdir(dirname)
-    raw_files = []
-    for filename in tqdm(filenames):
-        filename = dirname + filename
-        file = json.load(open(filename, 'rb'))
-        raw_files.append(file)
-    return raw_files
-def generate_clean_df(all_files):
-    cleaned_files = []
-    for file in tqdm(all_files):
-        features = [
-            file['paper_id'],
-            file['metadata']['title'],
-            format_authors(file['metadata']['authors']),
-            format_body(file['abstract']),
-            format_body(file['body_text']),
-        ]
-        cleaned_files.append(features)
-    col_names = ['paper_id', 'title', 'authors',
-                 'abstract', 'text']
-    clean_df = pd.DataFrame(cleaned_files, columns=col_names)
-    clean_df.head()
-    return clean_df
-
-
-
-# split into words
-
-
-def get_top_n(bm25_model, query, documents, n=5):
-    """ 
-    Reimplementation of the method to get the index of the top n.
-    
-    See https://github.com/dorianbrown/rank_bm25/blob/master/rank_bm25.py
-    """
-
-    scores = bm25_model.get_scores(query)
-    top_n = np.argsort(scores)[::-1][:n]
-    top_scores = scores[top_n]
-    return top_n, top_scores
-
-
-def clean_text_for_query_search(index, text_list, stopword_remove=False,
-                                stemming=True,
-                                stemmer=PorterStemmer()):
-    """
-    Clean-up the text to make a key-word query more efficient.
-    
-    Lower case, remove punctuation, numeric strings, stopwords,
-    and finally stem.
-    
-    Note: Do not use before a language model
-    
-    Parameters
-    ----------
-    index : int
-        Index of text in list to process, for use of vectorization
-    text : String
-        Text to clean
-    stopword_remove : boolean
-        True to remove stowords
-        Article suggests that this is detrimental
-    stemming : boolean
-        True for stemming the text
-        Article suggests that this is only useful with a very weak stemmer   
-    stemmer : NLTK stemmer
-        Stemmer to use
-        
-    Returns
-    -------
-    cleaned_text : string
-        Processed text
-    """
-    # retrieve element from list to use tqdm
-    text = text_list[index]
-    
-    punc_table = str.maketrans('', '', string.punctuation)
-    stop_words = set(stopwords.words('english'))
-    
-    def process_tokens(token):
-        """ Vectorize token processing."""
-        token_low = token.lower()
-        stripped = token_low.translate(punc_table)
-        alpha = stripped if not stripped.isnumeric() else ''
-        # remove stop words filtering as suggested in article
-        if stopword_remove:
-            alpha = alpha if not alpha in stop_words else ''
-        # also disable stemmer! as suggested in article
-        if stemming:
-            alpha = stemmer.stem(alpha)
-        
-        return alpha
-    
-    concat_doc = list(map(lambda x: process_tokens(x), word_tokenize(text)))
-    cleaned_doc = ' '.join([w for w in concat_doc if not w == ''])
-    
-    return cleaned_doc
-
-
-	
-os.chdir('/home/jkraft/Dokumente/Kaggle/')
-
-# some titles and abstract are empty in the data
-data_df = pd.read_csv("./1000_doc_df.csv")
-
-# =============================================================================
-# Try BM25
-# =============================================================================
-
-
-# in the implementation!
-
-
-task_text = ["What do we know about COVID-19 risk factors? What have we learned from epidemiological studies?"]
-quest_filename = "./question1.txt"
-
-def read_question(task_text, quest_filename):
-    # get task text
-    with open(quest_filename) as f: 
-        quest_text = task_text + f.readlines()
-    return quest_text
-
-def search_corpus_for_question(quest_text, data_df, model=BM25Plus, top_n=10,
-                               col='cleaned_text'):
-    """
-    Clean-up the text to make a key-word query more efficient.
-    
-    Lower case, remove punctuation, numeric strings, stopwords,
-    and finally stem.
-    
-    Note: Do not use before a language model
-    
-    Parameters
-    ----------
-    quest_text : List of string
-        Lines of the questions + task.
-    data_df : Pandas dataframe
-        Dataframe with corpus text
-    model: BM25 model
-        Model to use
-    top_n: int
-        quantity of results to return 
-    col: string
-        column to search on
-        
-    Returns
-    -------
-    indices : list of int
-        Indices of answers in the input dataframe
-    scores : list of float
-        scores of the top documents
-    flat_query : list of string
-        Prepared query text
-    """
-    # create BM25 model
-    corpus = data_df[col]
-    tokenized_corpus = [str(doc).split(" ") for doc in corpus]
-    bm25 = model(tokenized_corpus)
-    
-    # prepare query
-    cleaned_query = list(map(
-            lambda x: clean_text_for_query_search(x, quest_text), trange(len(quest_text))))
-    flat_query = " ".join(map(str, cleaned_query))
-    tokenized_query = list(flat_query.split(" "))
-    # search
-    indices, scores = get_top_n(bm25, tokenized_query, corpus, n=top_n)
-
-    return indices, scores, flat_query
 
 # TO DO: try averaging the last 4 layers embeddings
 def extract_scibert(text, tokenizer, model):
@@ -273,6 +83,70 @@ def cross_match(state1, state2, use_CLS=False):
     sim = sim.numpy()
     return sim
 
+# Prepare data
+
+# # extract all data
+# data_dir = '/home/jkraft/Dokumente/Kaggle/subset_data/' # 1000 documents
+# all_files = clean_hf.load_files(data_dir)
+# data_df = clean_hf.generate_clean_df(all_files)
+#
+# # prepare text for BM25
+# text_to_clean = list(data_df['text'])
+# index_list = list(range(len(text_to_clean)))
+#
+# data_df['cleaned_text'] = list(map(
+#         lambda x: clean_hf.clean_text_for_query_search(x, text_to_clean), trange(len(text_to_clean)))
+#         )
+#
+# # prepare text for BM25
+# abstract_text_to_clean = np.array(data_df['abstract'])
+# # replace NaN for papers without abstracts
+# is_nan_list = list(map(lambda x: str(x), list(abstract_text_to_clean)))
+# abstract_text_to_clean[np.array(is_nan_list) == 'nan'] = ''
+# index_list = list(range(len(abstract_text_to_clean)))
+#
+# data_df['cleaned_abstract'] = list(map(
+#         lambda x: clean_hf.clean_text_for_query_search(
+#             x, abstract_text_to_clean), trange(len(abstract_text_to_clean)))
+#         )
+#
+# # prepare text for BM25
+# abstract_text_to_clean = np.array(data_df['title'])
+# # replace NaN for papers without abstracts
+# is_nan_list = list(map(lambda x: str(x), list(abstract_text_to_clean)))
+# abstract_text_to_clean[np.array(is_nan_list) == 'nan'] = ''
+# index_list = list(range(len(abstract_text_to_clean)))
+#
+# data_df['cleaned_title'] = list(map(
+#         lambda x: BM25_hf.clean_text_for_query_search(
+#             x, abstract_text_to_clean), trange(len(abstract_text_to_clean)))
+#         )
+#
+#
+# ind_max = 100
+# _ = list(map(
+#         lambda x: BM25_hf.clean_text_for_query_search(x, text_to_clean[:ind_max]), trange(ind_max))
+#         )
+#
+# # save data
+# data_df.to_csv("./1000_doc_df.csv", index=False)
+
+
+os.chdir('/home/jkraft/Dokumente/Kaggle/')
+
+# some titles and abstract are empty in the data
+data_df = pd.read_csv("./1000_doc_df.csv")
+
+# =============================================================================
+# Try BM25
+# =============================================================================
+
+
+# in the implementation!
+
+
+task_text = ["What do we know about COVID-19 risk factors? What have we learned from epidemiological studies?"]
+quest_filename = "./question1.txt"
 
 # quest_text = read_question(task_text, quest_filename)
 
@@ -282,7 +156,7 @@ quest_text = ['covid19', 'covid-19', 'cov-19', 'ncov-19', 'sarscov2', '2019novel
               'SARS-CoV-2', '2019-nCoV', '2019nCoV', 'SARSr-CoV']
               # + ['Wuhan']
 
-indices, scores, _ = search_corpus_for_question(
+indices, scores, _ = BM25_hf.search_corpus_for_question(
     quest_text, data_df, BM25Okapi, len(data_df), 'cleaned_text')
 # select only the documents containing the coronavirus terms in the abstract
 # almost all documents contain the term in the text...
@@ -304,11 +178,11 @@ quest_text = ['COVID-19 risk factors? epidemiological studies',
 
 task_text = ['Neonates and pregnant women.']
 
-quest_text = read_question(task_text, quest_filename)
+quest_text = BM25_hf.read_question(task_text, quest_filename)
 # remove \n, but has no impact, this is already done somewhere else
 # quest_text = list(map(lambda x: str(x).strip(), quest_text))
 model = BM25Okapi
-indices, scores, quest = search_corpus_for_question(
+indices, scores, quest = BM25_hf.search_corpus_for_question(
     quest_text, data_df_red, model, len(data_df_red), 'cleaned_text')
 # remove again docs without keywords if searched with Okapi BM25
 if model == BM25Okapi:
