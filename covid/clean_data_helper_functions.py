@@ -3,7 +3,7 @@ import pandas as pd
 import os
 from tqdm import tqdm
 import json
-
+import math
 
 
 def format_name(author):
@@ -58,3 +58,35 @@ def generate_clean_df(all_files):
     clean_df = pd.DataFrame(cleaned_files, columns=col_names)
     clean_df.head()
     return clean_df
+
+def add_title_to_abstr(ind, title_list, abstract_list):
+    """
+    Add title to abstracts to make it longer.
+
+    Replace 'nan' by empty strings.
+
+    Parameters
+    ----------
+    ind : int
+        Index of list element
+    title_list : list of string
+        List of titles
+    abstract_list : list of string
+        List of abstracts
+
+    Returns
+    -------
+    long_abstr : string
+        Title + abstract
+    """
+
+    title = title_list[ind]
+    abstract = abstract_list[ind]
+    # remove nan
+    if not isinstance(title, str) and math.isnan(title):
+        title = ''
+    if not isinstance(abstract, str) and math.isnan(abstract):
+        abstract = ''
+    long_abstr = title + ' ' + abstract
+
+    return long_abstr
