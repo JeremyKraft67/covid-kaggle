@@ -43,16 +43,19 @@ def load_files(dirname):
     return raw_files
 
 def generate_clean_df(all_files):
+
     cleaned_files = []
     for file in tqdm(all_files):
-        features = [
-            file['paper_id'],
-            file['metadata']['title'],
-            format_authors(file['metadata']['authors']),
-            format_body(file['abstract']),
-            format_body(file['body_text']),
-        ]
-        cleaned_files.append(features)
+        # some papers lack all fields!
+        if 'abstract' in list(file.keys()):
+            features = [
+                file['paper_id'],
+                file['metadata']['title'],
+                format_authors(file['metadata']['authors']),
+                format_body(file['abstract']),
+                format_body(file['body_text']),
+            ]
+            cleaned_files.append(features)
     col_names = ['paper_id', 'title', 'authors',
                  'abstract', 'text']
     clean_df = pd.DataFrame(cleaned_files, columns=col_names)
