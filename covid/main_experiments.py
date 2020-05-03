@@ -12,7 +12,6 @@ from pprint import pprint
 from copy import deepcopy
 import numpy as np
 import pandas as pd
-from tqdm import tqdm, trange
 import nltk
 import re
 from time import time
@@ -24,7 +23,7 @@ from rank_bm25 import BM25Okapi, BM25Plus # don't use BM25L, there is a mistake
 import os
 import torch
 import numpy
-from tqdm import tqdm
+from tqdm import tqdm, trange
 from transformers import *
 import warnings
 
@@ -38,17 +37,6 @@ from covid import transformer_helper_functions as transf_hf
 nltk.download('stopwords')
 nltk.download('punkt')
 
-def concat_title_abstract(ans):
-    # concatenate title and abstract
-    title_list = list(ans['title'])
-    abstract_list = list(ans['abstract'])
-    ind_list = list(range(len(title_list)))
-    title_abstr_list = list(map(
-        lambda x: clean_hf.add_title_to_abstr(x, title_list, abstract_list),
-        ind_list))
-    ans['title_abstr'] = title_abstr_list
-
-    return ans
 
 os.chdir('/home/jkraft/Dokumente/Kaggle/')
 
@@ -67,11 +55,11 @@ quest_text = ['COVID-19 risk factors? epidemiological studies',
 
 # flat_query = 'Neonates and pregnant women.'
 
-flat_query = 'Smoking, pre-existing pulmonary disease'
+# flat_query = 'Smoking, pre-existing pulmonary disease'
 
 flat_query = 'Socio-economic and behavioral factors to understand the economic impact of the virus'
-
-flat_query = 'Neonates pregnant'
+#
+# flat_query = 'Neonates pregnant'
 
 # flat_query = 'risks factors'
 #
@@ -97,7 +85,7 @@ answers = answers.sort_values(['scores_BM25'], ascending=False)
 answers = answers.reset_index(drop=True)
 
 ans = answers[['scores_BM25', 'title', 'abstract', 'text']].copy()
-ans = concat_title_abstract(ans)
+ans = transf_hf.concat_title_abstract(ans)
 
 # BERT embeddings similarity
 
@@ -148,44 +136,76 @@ end_ans = end_ans.sort_values(['score_ML'], ascending=False)\
 
 # Try sentence transformers
 
-search_field = 'text'
+search_field = 'title_abstr'
 
 embedder = SentenceTransformer('bert-base-nli-stsb-mean-tokens')
-query_embedding = embedder.encode([flat_query])
 
-t = time()
-corpus_embeddings = embedder.encode(list(end_ans[search_field]), batch_size= 8,  show_progress_bar=True)
-print((time()-t)*1000)
+res_col_name='score_S_Bert'
+corpus_list = list(end_ans[search_field])
+score_ML = end_ans['score_ML']
+score_BM25 = end_ans['scores_BM25']
 
-# compute similarity
-sim_scores = []
-for query in tqdm(corpus_embeddings):
-    sim_scores.append(
-        cosine_similarity(query_embedding[0].reshape(1, -1),
-                          query.reshape(1, -1))[0][0])
-
-print(scipy.stats.describe(sim_scores))
-
-# Store results in the dataframe
+res = transf_hf.search_w_stentence_transformer(embedder, flat_query,
+                                    corpus_list=corpus_list,
+                                   score_ML=score_ML, score_BM25=score_BM25,
+                                   show_progress_bar=True, batch_size=8)
 end_ans_s_bert = end_ans.copy()
-end_ans_s_bert['score_S_Bert'] = np.array(sim_scores)
+end_ans_s_bert[res_col_name] = res
 # reorder columns
-end_ans_s_bert = end_ans_s_bert[['score_S_Bert', 'score_ML', 'scores_BM25', 'title_abstr', 'title', 'abstract', 'text']]
-end_ans_s_bert = end_ans_s_bert.sort_values(['score_S_Bert'], ascending=False)\
+end_ans_s_bert = end_ans_s_bert[[res_col_name, 'score_ML', 'scores_BM25', 'title_abstr', 'title', 'abstract', 'text']].copy()
+end_ans_s_bert = end_ans_s_bert.sort_values([res_col_name], ascending=False)\
                 .reset_index(drop=True)
 
-# df = end_ans_s_bert.iloc[:20,].copy()
+# compute paragraph scores
 
+# compute paragraphs
+paragraph_mat = list(map(lambda x: transf_hf.split_paragraph(x), list(end_ans_s_bert['text'])))
+end_ans_s_bert['paragraphs'] = paragraph_mat
+# coompute scores
+parag_list = end_ans_s_bert['paragraphs']
+res = list(map(lambda x:transf_hf. compute_parag_scores(x, parag_list, embedder, flat_query),
+         trange(len(end_ans_s_bert))))
+max_parag_score = list(map(lambda x: np.max(x), res))
+
+# print results
+print(scipy.stats.describe(max_parag_score))
+score_ML = end_ans_s_bert['score_ML']
+score_s_bert = end_ans_s_bert['score_S_Bert']
+score_BM25 = end_ans_s_bert['scores_BM25']
 # compute comparisons between methods
-df = end_ans_s_bert.copy()
-print(spearmanr(df['score_ML'], df['scores_BM25']))
-print(kendalltau(df['score_ML'], df['scores_BM25']))
+print('Similarity between Biobert and BM25:')
+print(spearmanr(score_ML, score_BM25))
+print(kendalltau(score_ML, score_BM25))
+print('Similarity between Sentence Bert and BM25:')
+print(spearmanr(score_s_bert, score_BM25))
+print(kendalltau(score_s_bert, score_BM25))
+print('Similarity between max S-bert paragraph scores and BM25:')
+print(spearmanr(max_parag_score, score_BM25))
+print(kendalltau(max_parag_score, score_BM25))
+print('Similarity between max S-bert paragraph scores and BM25:')
+print(spearmanr(max_parag_score + score_s_bert, score_BM25))
+print(kendalltau(max_parag_score + score_s_bert, score_BM25))
+# store results in dataframe
+res_col_name = 'score_max_parag'
+end_ans_s_bert[res_col_name] = max_parag_score
+# reorder columns
+end_ans_s_bert = end_ans_s_bert[[res_col_name, 'score_S_Bert', 'score_ML', 'scores_BM25', 'title_abstr', 'title',
+       'abstract', 'text', 'paragraphs']].copy()
+end_ans_s_bert = end_ans_s_bert.sort_values([res_col_name], ascending=False)\
+                .reset_index(drop=True)
 
-print(spearmanr(df['score_S_Bert'], df['scores_BM25']))
-print(kendalltau(df['score_S_Bert'], df['scores_BM25']))
+# test = end_ans_s_bert['paragraphs']
 
-print(spearmanr(df['score_S_Bert'], df['score_ML']))
-print(kendalltau(df['score_S_Bert'], df['score_ML']))
+# # compute stats of paragraph lengths
+# # only a fraction of the paragraphs should be trimmed by Bert
+# para_len = list(map(lambda x: [len(para.split()) for para in x] , list(paragraph_mat)))
+# flat_len_list = [item for sublist in para_len for item in sublist]
+# print(scipy.stats.describe(flat_len_list))
+# percent = range(0, 100, 2)
+# print(np.percentile(flat_len_list, percent))
+
+
+
 
 # end_ans.to_csv('res_albert_xx_large.csv', index=False)
 
@@ -213,3 +233,5 @@ print(kendalltau(df['score_S_Bert'], df['score_ML']))
 #
 # tokenizer = AutoTokenizer.from_pretrained("binwang/bert-large-nli-stsb")
 # model = AutoModelWithLMHead.from_pretrained("binwang/bert-large-nli-stsb")
+
+

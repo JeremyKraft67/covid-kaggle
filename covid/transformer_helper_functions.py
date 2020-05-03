@@ -111,3 +111,145 @@ def cross_match(state1, state2, use_CLS=False):
         sim = torch.cosine_similarity(state1, state2, dim=0)
     sim = sim.numpy()
     return sim
+
+
+
+def search_w_stentence_transformer(embedder, flat_query,
+                                    corpus_list,
+                                   score_ML=None, score_BM25=None,
+                                   show_progress_bar=True, batch_size=8):
+    """
+    Compute the similarity scores of Sentence transformer.
+
+    Parameters
+    ----------
+    embedder : Sentence Transformer model
+        Model to use
+    flat_query : string
+        Query text
+    corpus_list: list of string
+        Texts to search in
+    score_ML : list of float
+        scores of the other Machine learning-based approach
+    score_BM25 : list of float
+        scores of the other BM25 approach
+    show_progress_bar : boolean
+        True to show the progress bar when computing the corpus embeddings
+    batch_size : int
+        batch size for Sentence Transformer inference
+
+    Returns
+    -------
+    s_bert_res : list
+        Results
+    """
+
+    # compute embeddings
+    query_embedding = embedder.encode([flat_query])
+    corpus_embeddings = embedder.encode(corpus_list, batch_size= batch_size,  show_progress_bar=show_progress_bar)
+
+    # compute similarity
+    sim_scores = cosine_similarity(query_embedding[0].reshape(1, -1),
+                              np.array(corpus_embeddings))[0]
+
+    s_bert_res = sim_scores
+
+    # if we want to display the comparisons of methods / scores
+    if (score_ML is not None) and (score_BM25 is not None):
+        print('Similarity scores statistics:')
+        print(scipy.stats.describe(sim_scores))
+
+        # compute comparisons between methods
+        print('Similarity between Biobert and BM25:')
+        print(spearmanr(score_ML, score_BM25))
+        print(kendalltau(score_ML, score_BM25))
+        print('Similarity between Sentence Bert and BM25:')
+        print(spearmanr(s_bert_res, score_BM25))
+        print(kendalltau(s_bert_res, score_BM25))
+        print('Similarity between Sentence Bert and Biobert:')
+        print(spearmanr(s_bert_res, score_ML))
+        print(kendalltau(s_bert_res, score_ML))
+
+    return s_bert_res
+
+
+def concat_title_abstract(ans):
+    """
+    Compute the title with the abstract
+    to enrich the abstracts.
+
+    Parameters
+    ----------
+    ans: pandas dataframe
+        Dataframe with the results of BM25
+
+    Returns
+    -------
+    ans: pandas dataframe
+        Dataframe with the added column
+    """
+
+    # concatenate title and abstract
+    title_list = list(ans['title'])
+    abstract_list = list(ans['abstract'])
+    ind_list = list(range(len(title_list)))
+    title_abstr_list = list(map(
+        lambda x: clean_hf.add_title_to_abstr(x, title_list, abstract_list),
+        ind_list))
+    ans['title_abstr'] = title_abstr_list
+
+    return ans
+
+def split_paragraph(text, min_words=2):
+    """
+    Split the paper text into paragraphs.
+
+    Parameters
+    ----------
+    text: string
+        paper text
+    min_words: int
+        remove paragraphs with quantity of words <= min words
+
+    Returns
+    -------
+    split_text_clean: list of string
+        list of paragraphs
+    """
+
+    split_text = text.split('\n\n')
+    # remove last ''
+    split_text = split_text[:-1]
+    # remove trash
+    split_text_clean = [t for t in split_text if len(t.split()) > min_words]
+
+    return split_text_clean
+
+def compute_parag_scores(index, parag_list, embedder, flat_query):
+    """
+    Compute the similarity scores of Sentence transformer.
+
+    Parameters
+    ----------
+    index : int
+        row index
+    parag_list : list of list of string
+        list of paragraphs / row
+    embedder : Sentence Transformer model
+        Model to use
+    flat_query : string
+        Query text
+
+    Returns
+    -------
+    res : matrix of float
+        Similarity scores / paragraphs / row
+    """
+
+    parag_paper = parag_list[index]
+    res = search_w_stentence_transformer(embedder, flat_query,
+                                        corpus_list=parag_paper,
+                                       score_ML=None, score_BM25=None,
+                                       show_progress_bar=False, batch_size=8)
+
+    return res
