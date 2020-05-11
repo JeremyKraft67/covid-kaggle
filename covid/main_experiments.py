@@ -53,7 +53,7 @@ quest_text = ['COVID-19 risk factors? epidemiological studies',
  '    Socio-economic behavioral factors economic impact virus differences']
 
 
-# flat_query = 'Neonates and pregnant women.'
+flat_query = 'Neonates and pregnant women.'
 
 # flat_query = 'Smoking, pre-existing pulmonary disease'
 
@@ -182,7 +182,7 @@ print(kendalltau(score_s_bert, score_BM25))
 print('Similarity between max S-bert paragraph scores and BM25:')
 print(spearmanr(max_parag_score, score_BM25))
 print(kendalltau(max_parag_score, score_BM25))
-print('Similarity between max S-bert paragraph scores and BM25:')
+print('Similarity between max S-bert paragraph + S-Bert scores and BM25:')
 print(spearmanr(max_parag_score + score_s_bert, score_BM25))
 print(kendalltau(max_parag_score + score_s_bert, score_BM25))
 # store results in dataframe
@@ -234,4 +234,126 @@ end_ans_s_bert = end_ans_s_bert.sort_values([res_col_name], ascending=False)\
 # tokenizer = AutoTokenizer.from_pretrained("binwang/bert-large-nli-stsb")
 # model = AutoModelWithLMHead.from_pretrained("binwang/bert-large-nli-stsb")
 
+#
+#
+# # TRY BART
+#
+#
+# import argparse
+# from pathlib import Path
+#
+# import torch
+# from tqdm import tqdm
+#
+# from transformers import BartForConditionalGeneration, BartTokenizer
+#
+#
+# DEFAULT_DEVICE = "cpu"
+#
+#
+# def chunks(lst, n):
+#     """Yield successive n-sized chunks from lst."""
+#     for i in range(0, len(lst), n):
+#         yield lst[i : i + n]
+#
+#
+# def generate_summaries(
+#     examples: list,  model_name: str = "bart-large-cnn", batch_size: int = 8, device: str = DEFAULT_DEVICE
+# ):
+#
+#     model = BartForConditionalGeneration.from_pretrained(model_name).to(device)
+#     tokenizer = BartTokenizer.from_pretrained(model_name)
+#
+#     max_length = 100
+#     min_length = 30
+#
+#     for batch in tqdm(list(chunks(examples, batch_size))):
+#         dct = tokenizer.batch_encode_plus(batch, max_length=1024, return_tensors="pt", pad_to_max_length=True)
+#         t = time()
+#         summaries = model.generate(
+#             input_ids=dct["input_ids"].to(device),
+#             attention_mask=dct["attention_mask"].to(device),
+#             num_beams=5,
+#             temperature=1,
+#             length_penalty=1.0,
+#             max_length=max_length + 2,  # +2 from original because we start at step=1 and stop before max_length
+#             min_length=min_length + 1,  # +1 from original because we start at step=1
+#             no_repeat_ngram_size=3,
+#             early_stopping=True,
+#             decoder_start_token_id=model.config.eos_token_id,
+#         )
+#         print((time() - t) * 1000)
+#         dec = [tokenizer.decode(g, skip_special_tokens=True, clean_up_tokenization_spaces=False) for g in summaries]
+#         print((time() - t) * 1000)
+#
+#         return dec
+#
+#
+# model_name= "bart-large-xsum"
+# model_name= "bart-large-cnn"
+#
+# res = generate_summaries(
+#     examples=[end_ans_s_bert['title_abstr'][1]], model_name= model_name, batch_size = 8, device= DEFAULT_DEVICE)
+#
+# print(res)
+#
+# len(end_ans_s_bert['title_abstr'][1].split())
+#
+# model= "bart-large-xsum"
+# tokenizer = AutoTokenizer.from_pretrained("bart-large-xsum")
+# BartTokenizer.from_pretrained("bart-large-xsum")
+# model = AutoModelWithLMHead.from_pretrained("bart-large-xsum")
+
+
+# TRY QA
+
+tokenizer = AutoTokenizer.from_pretrained("deepset/bert-base-cased-squad2")
+model = AutoModelForQuestionAnswering.from_pretrained("deepset/bert-base-cased-squad2")
+
+tokenizer = AutoTokenizer.from_pretrained("bert-large-cased-whole-word-masking-finetuned-squad")
+model = AutoModelForQuestionAnswering.from_pretrained("bert-large-cased-whole-word-masking-finetuned-squad")
+
+
+def answer_question(question, answer_text, tokenizer, model):
+    '''
+    Takes a `question` string and an `answer_text` string (which contains the
+    answer), and identifies the words within the `answer_text` that are the
+    answer. Prints them out.
+    '''
+    # ======== Tokenize ========
+    # Apply the tokenizer to the input text, treating them as a text-pair.
+    t = time()
+    token_dict = tokenizer.encode_plus(question, answer_text)
+    print((time() - t) * 1000)
+
+    # Report how long the input sequence is.
+    print('Query has {:,} tokens.\n'.format(len(token_dict['input_ids'])))
+
+    # compute scores (as before the softmax)
+    start_scores, end_scores = model(torch.tensor([token_dict['input_ids']]),
+                                     token_type_ids=torch.tensor([token_dict['token_type_ids']]))
+
+    # ======== Reconstruct Answer ========
+    # Find the tokens with the highest `start` and `end` scores.
+    answer_start = torch.argmax(start_scores)
+    answer_end = torch.argmax(end_scores)
+
+    t = time()
+    answer = tokenizer.decode(token_dict['input_ids'][int(answer_start): int(answer_end)+1], skip_special_tokens = False, clean_up_tokenization_spaces = True)
+    print((time() - t) * 1000)
+    print(answer)
+
+
+
+answer_text = 'We introduce a new language representation model called BERT, which stands for Bidirectional Encoder Representations from Transformers. Unlike recent language representation models (Peters et al., 2018a; Radford et al., 2018), BERT is designed to pretrain deep bidirectional representations from unlabeled text by jointly conditioning on both left and right context in all layers. As a result, the pre-trained BERT model can be finetuned with just one additional output layer to create state-of-the-art models for a wide range of tasks, such as question answering and language inference, without substantial taskspecific architecture modifications. BERT is conceptually simple and empirically powerful. It obtains new state-of-the-art results on eleven natural language processing tasks, including pushing the GLUE score to 80.5% (7.7% point absolute improvement), MultiNLI accuracy to 86.7% (4.6% absolute improvement), SQuAD v1.1 question answering Test F1 to 93.2 (1.5 point absolute improvement) and SQuAD v2.0 Test F1 to 83.1 (5.1 point absolute improvement).'
+
+question = "What is the score on SQUAD 2?"
+
+question = "Where to download?"
+answer_text = "BERT-large is really big... it has 24-layers and an embedding size of 1,024, for a total of 340M parameters! Altogether it is 1.34GB, so expect it to take a couple minutes to download to your Colab instance."
+
+
+t = time()
+answer_question(question, answer_text, tokenizer, model)
+print((time()-t)*1000)
 
