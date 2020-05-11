@@ -322,9 +322,7 @@ def answer_question(question, answer_text, tokenizer, model):
     '''
     # ======== Tokenize ========
     # Apply the tokenizer to the input text, treating them as a text-pair.
-    t = time()
     token_dict = tokenizer.encode_plus(question, answer_text)
-    print((time() - t) * 1000)
 
     # Report how long the input sequence is.
     print('Query has {:,} tokens.\n'.format(len(token_dict['input_ids'])))
@@ -332,24 +330,33 @@ def answer_question(question, answer_text, tokenizer, model):
     # compute scores (as before the softmax)
     start_scores, end_scores = model(torch.tensor([token_dict['input_ids']]),
                                      token_type_ids=torch.tensor([token_dict['token_type_ids']]))
+    # get the best start and end score, with start <= end
 
-    # ======== Reconstruct Answer ========
-    # Find the tokens with the highest `start` and `end` scores.
-    answer_start = torch.argmax(start_scores)
-    answer_end = torch.argmax(end_scores)
+    # compute the upper triangular matrix of Mij = start_i + end_j
+    start_scores = start_scores.data.numpy().flatten()
+    end_scores = end_scores.data.numpy().flatten()
 
-    t = time()
+    mat_score = np.tile(start_scores, (len(start_scores), 1)).transpose()
+    mat_score = mat_score + np.tile(end_scores, (len(end_scores), 1))
+    # take the upper triangular matrix to make sure that the end index >= start index
+    mat_score = np.triu(mat_score)
+
+    # find the indices of the maximum
+    answer_start = np.argmax(mat_score.flatten()) // len(mat_score)
+    answer_end = np.argmax(mat_score.flatten()) % len(mat_score)
+
+    assert np.max(mat_score) == mat_score[answer_start, answer_end]
+
     answer = tokenizer.decode(token_dict['input_ids'][int(answer_start): int(answer_end)+1], skip_special_tokens = False, clean_up_tokenization_spaces = True)
-    print((time() - t) * 1000)
     print(answer)
 
 
 
 answer_text = 'We introduce a new language representation model called BERT, which stands for Bidirectional Encoder Representations from Transformers. Unlike recent language representation models (Peters et al., 2018a; Radford et al., 2018), BERT is designed to pretrain deep bidirectional representations from unlabeled text by jointly conditioning on both left and right context in all layers. As a result, the pre-trained BERT model can be finetuned with just one additional output layer to create state-of-the-art models for a wide range of tasks, such as question answering and language inference, without substantial taskspecific architecture modifications. BERT is conceptually simple and empirically powerful. It obtains new state-of-the-art results on eleven natural language processing tasks, including pushing the GLUE score to 80.5% (7.7% point absolute improvement), MultiNLI accuracy to 86.7% (4.6% absolute improvement), SQuAD v1.1 question answering Test F1 to 93.2 (1.5 point absolute improvement) and SQuAD v2.0 Test F1 to 83.1 (5.1 point absolute improvement).'
 
-question = "What is the score on SQUAD 2?"
+question = "What is the score of SQUAD 2?"
 
-question = "Where to download?"
+question = "How long does it take to download?"
 answer_text = "BERT-large is really big... it has 24-layers and an embedding size of 1,024, for a total of 340M parameters! Altogether it is 1.34GB, so expect it to take a couple minutes to download to your Colab instance."
 
 
