@@ -36,7 +36,7 @@ def get_top_n(bm25_model, query, documents, n=5):
     return top_n, top_scores
 
 
-def clean_text_for_query_search(index, text_list, stopword_remove=False,
+def clean_text_for_query_search(index, text_list, stopword_remove=True,
                                 stemming=True,
                                 stemmer=PorterStemmer()):
     """

@@ -253,3 +253,151 @@ def compute_parag_scores(index, parag_list, embedder, flat_query):
                                        show_progress_bar=False, batch_size=8)
 
     return res
+
+
+
+def chunks(lst, n):
+    """Yield successive n-sized chunks from lst."""
+    for i in range(0, len(lst), n):
+        yield lst[i : i + n]
+
+def answer_question_batch(question, answer_text, tokenizer, model, squad2=True, tau=0.5, batch_size=4):
+    """
+    Search the answer of a question and do the computations in batch.
+
+    Parameters
+    ----------
+    question : string
+        The natural language question
+    answer_text : list of string
+        The corpus to search in
+    tokenizer : Huggingface tokenizer
+        The tokenizer to use
+    model : Huggingface model
+        The model to use
+    squad2 : boolean
+        True if the model is trained on Squad2, False for Squad 1.
+        In Squad 1, the model presupposes that the answer exists, and might return garbage
+        if there is no answer in the text. For Squad 2, the model also predicts if there is an answer in the text
+    tau : float
+        For squad 2. Buffer used to decide if there is an answer.
+        is_answer_found = score > cls_score + tau, see Bert paper
+    batch_size : int
+        the batch size
+
+    Returns
+    -------
+    ans_qa_batch : Pandas dataframe
+        Dataframe with the columns
+    """
+
+    # ======== Tokenize ========
+    # Apply the tokenizer to the input text, treating them as a text-pair.
+
+    answer_l = []
+    score_l = []
+
+    all_embeddings = []
+    length_sorted_idx = np.argsort([len(sen) for sen in answer_text])
+
+    # chunks
+    iterator = range(0, len(answer_text), batch_size)
+    iterator = tqdm(iterator, desc="Batches")
+
+    # compute batches
+    for batch_idx in iterator:
+        # process per batch
+        start_scores_l = []
+        end_scores_l = []
+
+        batch_start = batch_idx
+        batch_end = min(batch_start + batch_size, len(answer_text))
+        batch = length_sorted_idx[batch_start: batch_end]
+
+        # compute the longest length in the batch
+        # assume that it is for the last element
+
+        # solve bug in indices for last element
+        if batch_end != len(answer_text):
+            longest_text = answer_text[length_sorted_idx[batch_end]]
+        else:
+            longest_text = answer_text[length_sorted_idx[batch_end - 1]]
+        longest_seq = tokenizer.encode_plus(question,
+                              answer_text[length_sorted_idx[batch_end-1]],
+                              max_length=model.config.max_position_embeddings,
+                              pad_to_max_length=False,
+                              return_attention_masks=True)['input_ids']
+        max_len = len(longest_seq)
+
+
+        token_dict_batch = [tokenizer.encode_plus(question,
+                                                  answer_text[text_id],
+                                                  max_length = min(max_len, model.config.max_position_embeddings),
+                                                  pad_to_max_length=True,
+                                                  return_attention_masks=True)
+                            for text_id in batch]
+
+        input_ids = torch.tensor([token_dict_batch[i]['input_ids'] for i in range(len(token_dict_batch))])
+        token_ids = torch.tensor([token_dict_batch[i]['token_type_ids'] for i in range(len(token_dict_batch))])
+        attention_mask = torch.tensor([token_dict_batch[i]['attention_mask'] for i in range(len(token_dict_batch))])
+
+        # compute scores (as before the softmax)
+        start_scores, end_scores = model(input_ids,
+                                         token_type_ids=token_ids,
+                                         attention_mask=attention_mask)
+
+        # save scores
+        start_scores = start_scores.data.numpy()
+        end_scores = end_scores.data.numpy()
+
+        start_scores_l.append(start_scores)
+        end_scores_l.append(end_scores)
+
+        # reconstruct the answers
+        for i in range(len(start_scores_l[0])):
+            start_scores = start_scores_l[0][i]
+            end_scores = end_scores_l[0][i]
+
+            # get the best start and end score, with start <= end
+
+            # compute the upper triangular matrix of Mij = start_i + end_j
+
+            mat_score = np.tile(start_scores, (len(start_scores), 1)).transpose()
+            mat_score = mat_score + np.tile(end_scores, (len(end_scores), 1))
+            # take the upper triangular matrix to make sure that the end index >= start index
+            mat_score = np.triu(mat_score)
+
+            # find the indices of the maximum
+            arg_max_ind = np.argmax(mat_score.flatten())
+            answer_start = arg_max_ind // len(mat_score)
+            answer_end = arg_max_ind % len(mat_score)
+            assert np.max(mat_score) == mat_score[answer_start, answer_end]
+            score = mat_score.flatten()[arg_max_ind]
+
+            # check if answer is found (score > CLS_score + tau, see paper)
+            # otherwise return no answer
+            if squad2:
+                # check if answer exists
+                cls_score = start_scores[0] + end_scores[0]
+                is_answer_found = score > cls_score + tau
+                # redefine answer
+                score = score if is_answer_found else cls_score
+                answer_start = answer_start if is_answer_found else 0
+                answer_end = answer_end if is_answer_found else 0
+            # stock the answer
+            answer = tokenizer.decode(
+                token_dict_batch[i]['input_ids'][int(answer_start): int(answer_end)+1],
+                skip_special_tokens = False,
+                clean_up_tokenization_spaces = True)
+            answer = answer if answer != '[CLS]' else 'No answer found.'
+            answer_l.append(answer)
+            score_l.append(score)
+
+
+    # create dataframe results
+    ans_qa_batch = pd.DataFrame(zip(score_l, answer_l, length_sorted_idx), columns=['score_qa', 'answer', 'original_idx'])
+    ans_qa_batch['original_idx'] = ans_qa_batch['original_idx'].astype(int)
+    ans_qa_batch = ans_qa_batch.sort_values(['score_qa'], ascending=False) \
+        .reset_index(drop=True)
+
+    return ans_qa_batch
