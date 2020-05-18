@@ -53,9 +53,9 @@ quest_text = ['COVID-19 risk factors? epidemiological studies',
  '    Socio-economic behavioral factors economic impact virus differences']
 
 
-BIOBERT = False
-S_BERT = False
-COMPUTE_PARAGRAPH_SCORE = False
+BIOBERT = True
+S_BERT = True
+COMPUTE_PARAGRAPH_SCORE = True
 QA = True
 top_res = 50
 
@@ -136,11 +136,8 @@ if BIOBERT:
     search_field = 'title_abstr'
 
     # process query
-    t = time()
     query_ids, query_words, query_state, query_class_state, query_layer_concat =\
         transf_hf.extract_scibert(flat_query, tokenizer_biobert, model_biobert)
-    print((time()-t)*1000)
-    print(len(query_words))
 
     # compute similarity scores
     sim_scores = []
@@ -157,12 +154,13 @@ if BIOBERT:
     # Store results in the dataframe
     end_ans = ans.copy()
     orig_col = list(ans.columns)
-    end_ans['score_ML'] = np.array(sim_scores)
+    end_ans['score_biobert'] = np.array(sim_scores)
     # reorder columns
-    end_ans = end_ans[['score_ML'] + orig_col]
-    end_ans = end_ans.sort_values(['score_ML'], ascending=False)\
+    end_ans = end_ans[['score_biobert'] + orig_col]
+    end_ans = end_ans.sort_values(['score_biobert'], ascending=False)\
                     .reset_index(drop=True)
     ans = end_ans.copy()
+
 
 if S_BERT:
 
@@ -172,12 +170,8 @@ if S_BERT:
 
     res_col_name='score_S_Bert'
     corpus_list = list(ans[search_field])
-    score_ML = ans['score_ML']
-    score_BM25 = ans['scores_BM25']
-
     res = transf_hf.search_w_stentence_transformer(embedder, flat_query,
                                         corpus_list=corpus_list,
-                                       score_ML=score_ML, score_BM25=score_BM25,
                                        show_progress_bar=True, batch_size=8)
     orig_col = list(ans.columns)
     ans[res_col_name] = res
@@ -185,6 +179,9 @@ if S_BERT:
     ans = ans[[res_col_name] + orig_col].copy()
     ans = ans.sort_values([res_col_name], ascending=False)\
                     .reset_index(drop=True)
+    # print scores
+    transf_hf.compare_scores(ans)
+
 
 if COMPUTE_PARAGRAPH_SCORE:
     # compute paragraph scores
@@ -193,28 +190,10 @@ if COMPUTE_PARAGRAPH_SCORE:
     # compute paragraphs
     paragraph_mat = list(map(lambda x: transf_hf.split_paragraph(x), list(ans['text'])))
     # coompute scores
-    res = list(map(lambda x:transf_hf. compute_parag_scores(x, paragraph_mat, embedder, flat_query),
+    res = list(map(lambda x:transf_hf.compute_parag_scores(x, paragraph_mat, embedder, flat_query),
              trange(len(ans))))
     max_parag_score = list(map(lambda x: np.max(x), res))
 
-    # print results
-    print(scipy.stats.describe(max_parag_score))
-    score_ML = ans['score_ML']
-    score_s_bert = ans['score_S_Bert']
-    score_BM25 = ans['scores_BM25']
-    # compute comparisons between methods
-    print('Similarity between Biobert and BM25:')
-    print(spearmanr(score_ML, score_BM25))
-    print(kendalltau(score_ML, score_BM25))
-    print('Similarity between Sentence Bert and BM25:')
-    print(spearmanr(score_s_bert, score_BM25))
-    print(kendalltau(score_s_bert, score_BM25))
-    print('Similarity between max S-bert paragraph scores and BM25:')
-    print(spearmanr(max_parag_score, score_BM25))
-    print(kendalltau(max_parag_score, score_BM25))
-    print('Similarity between max S-bert paragraph + S-Bert scores and BM25:')
-    print(spearmanr(max_parag_score + score_s_bert, score_BM25))
-    print(kendalltau(max_parag_score + score_s_bert, score_BM25))
     # store results in dataframe
     res_col_name = 'score_max_parag'
     ans[res_col_name] = max_parag_score
@@ -222,6 +201,8 @@ if COMPUTE_PARAGRAPH_SCORE:
     ans = ans[[res_col_name] + orig_col].copy()
     ans = ans.sort_values([res_col_name], ascending=False)\
                     .reset_index(drop=True)
+
+    transf_hf.compare_scores(ans)
 
 
 # TRY QA

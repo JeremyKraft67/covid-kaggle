@@ -115,9 +115,8 @@ def cross_match(state1, state2, use_CLS=False):
 
 
 def search_w_stentence_transformer(embedder, flat_query,
-                                    corpus_list,
-                                   score_ML=None, score_BM25=None,
-                                   show_progress_bar=True, batch_size=8):
+                                corpus_list,
+                                show_progress_bar=True, batch_size=8):
     """
     Compute the similarity scores of Sentence transformer.
 
@@ -129,10 +128,6 @@ def search_w_stentence_transformer(embedder, flat_query,
         Query text
     corpus_list: list of string
         Texts to search in
-    score_ML : list of float
-        scores of the other Machine learning-based approach
-    score_BM25 : list of float
-        scores of the other BM25 approach
     show_progress_bar : boolean
         True to show the progress bar when computing the corpus embeddings
     batch_size : int
@@ -151,24 +146,7 @@ def search_w_stentence_transformer(embedder, flat_query,
     # compute similarity
     sim_scores = cosine_similarity(query_embedding[0].reshape(1, -1),
                               np.array(corpus_embeddings))[0]
-
     s_bert_res = sim_scores
-
-    # if we want to display the comparisons of methods / scores
-    if (score_ML is not None) and (score_BM25 is not None):
-        print('Similarity scores statistics:')
-        print(scipy.stats.describe(sim_scores))
-
-        # compute comparisons between methods
-        print('Similarity between Biobert and BM25:')
-        print(spearmanr(score_ML, score_BM25))
-        print(kendalltau(score_ML, score_BM25))
-        print('Similarity between Sentence Bert and BM25:')
-        print(spearmanr(s_bert_res, score_BM25))
-        print(kendalltau(s_bert_res, score_BM25))
-        print('Similarity between Sentence Bert and Biobert:')
-        print(spearmanr(s_bert_res, score_ML))
-        print(kendalltau(s_bert_res, score_ML))
 
     return s_bert_res
 
@@ -249,7 +227,6 @@ def compute_parag_scores(index, parag_list, embedder, flat_query):
     parag_paper = parag_list[index]
     res = search_w_stentence_transformer(embedder, flat_query,
                                         corpus_list=parag_paper,
-                                       score_ML=None, score_BM25=None,
                                        show_progress_bar=False, batch_size=8)
 
     return res
@@ -401,3 +378,24 @@ def answer_question_batch(question, answer_text, tokenizer, model, squad2=True, 
         .reset_index(drop=True)
 
     return ans_qa_batch
+
+def compare_scores(ans):
+    """
+    Compare the scores to the BM25 scores.
+
+    Parameters
+    ----------
+    ans : pandas dataframe
+        Dataframe containing the BM25 score and other algorithm's score
+    """
+
+    col_list = list(ans.columns)
+    # find out which column have scores
+    col_has_score = list(map(lambda x: ('score' in x) and not('BM25' in x), col_list))
+    col_w_score = np.array(col_list)[col_has_score]
+
+    # compute comparisons between methods
+    for col in col_w_score:
+        print('Similarity between ' + col + ' and BM25:')
+        print(spearmanr(ans[col], ans['scores_BM25']))
+        print(kendalltau(ans[col], ans['scores_BM25']))
