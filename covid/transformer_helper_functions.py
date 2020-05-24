@@ -265,7 +265,7 @@ def answer_question_batch(question, answer_text, tokenizer, model, squad2=True, 
     Returns
     -------
     ans_qa_batch : Pandas dataframe
-        Dataframe with the columns
+        Dataframe with the columns ['score_qa', 'answer', 'original_idx']
     """
 
     # ======== Tokenize ========

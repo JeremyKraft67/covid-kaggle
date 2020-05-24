@@ -25,6 +25,8 @@ import torch
 import numpy
 from tqdm import tqdm, trange
 from transformers import *
+from tqdm import tqdm
+from transformers import BartForConditionalGeneration, BartTokenizer
 import warnings
 
 from covid import clean_data_helper_functions as clean_hf
@@ -53,10 +55,11 @@ quest_text = ['COVID-19 risk factors? epidemiological studies',
  '    Socio-economic behavioral factors economic impact virus differences']
 
 
-BIOBERT = True
-S_BERT = True
-COMPUTE_PARAGRAPH_SCORE = True
+BIOBERT = False
+S_BERT = False
+COMPUTE_PARAGRAPH_SCORE = False
 QA = True
+BART = False
 top_res = 50
 
 # TO DO: Remove the print of column score for columns that were not computed
@@ -92,8 +95,14 @@ if QA:
 flat_query = 'risks factors'
 flat_query = 'What is the incubation period?'
 flat_query = 'Are there mutations?'
-flat_query = 'How many deaths in China?'
-flat_query = 'When has the epidemy started?'
+# flat_query = 'How many deaths in China?'
+# flat_query = 'When has the epidemy started?'
+# flat_query = 'Are the pregnant women more at risk?'
+# flat_query = 'Do smoking or pre-existing pulmonary disease increase risk?'
+# flat_query = 'How effective is school distancing'
+#
+# flat_query = 'What age group is at most risk'
+
 # flat_query = 'incubation period'
 
 #
@@ -234,7 +243,140 @@ if QA:
     ans = ans.sort_values(['score_qa'], ascending=False) \
         .reset_index(drop=True)
 
+    # remove rows with no answers
+    no_answer = (ans['answer'] == 'No answer found.') | (ans['answer'] == '')
+    ans_clean = ans[~no_answer].copy()
+    ans_clean = ans_clean.reset_index(drop=True)
 
+
+# TRY BART
+
+
+import argparse
+from pathlib import Path
+
+import torch
+
+if BART:
+
+    DEFAULT_DEVICE = "cpu"
+
+
+    def chunks(lst, n):
+        """Yield successive n-sized chunks from lst."""
+        for i in range(0, len(lst), n):
+            yield lst[i : i + n]
+
+    def generate_summaries(model, tokenizer,
+        df, col_name: str = 'title_abstr', batch_size: int = 8, device: str = DEFAULT_DEVICE,
+        max_length_input: int = 1024):
+
+        """
+        Summarize with batch processing.
+
+        Parameters
+        ----------
+        model : Huggingface model
+            The model to use
+        tokenizer : Huggingface tokenizer
+            The tokenizer to use
+        df : pandas dataframe
+            The dataframe containing the paragraph to summarize
+        col_name : string
+            column to summarize
+        batch_size : int
+            the batch size
+        device : str
+            the device to use for running the network
+        max_length_input : int
+            Maximum length of input. Longer input will be truncated.
+
+        Returns
+        -------
+        df : Pandas dataframe
+            Input dataframe with the added columns ['summary']
+        """
+
+        examples = df[col_name]
+        summ_l = []
+
+        max_length = 100
+        min_length = 30
+
+        # choose the batches
+
+        all_embeddings = []
+        length_sorted_idx = np.argsort([len(sen) for sen in list(examples)])
+
+        # chunks
+        iterator = range(0, len(examples), batch_size)
+        iterator = tqdm(iterator, desc="Batches")
+
+        # compute batches
+        for batch_idx in iterator:
+            # process per batch
+
+            batch_start = batch_idx
+            batch_end = min(batch_start + batch_size, len(examples))
+            batch = length_sorted_idx[batch_start: batch_end]
+
+            # compute the longest length in the batch
+            # assume that it is for the last element
+
+            # solve bug in indices for last element
+            if batch_end != len(examples):
+                longest_text = examples[length_sorted_idx[batch_end]]
+            else:
+                longest_text = examples[length_sorted_idx[batch_end - 1]]
+
+            longest_seq_dct = tokenizer.batch_encode_plus([longest_text], return_tensors="pt")
+            max_len = len(longest_seq_dct['input_ids'].squeeze())
+
+            # encode th whole batch
+            dct = tokenizer.batch_encode_plus(examples[batch],
+                                              max_length=min(max_len, max_length_input),
+                                              return_tensors="pt", pad_to_max_length=True)
+            # generate batch summaries
+            summaries = model.generate(
+                input_ids=dct["input_ids"].to(device),
+                attention_mask=dct["attention_mask"].to(device),
+                num_beams=5,
+                temperature=1,
+                length_penalty=1.0,
+                max_length=max_length + 2,  # +2 from original because we start at step=1 and stop before max_length
+                min_length=min_length + 1,  # +1 from original because we start at step=1
+                no_repeat_ngram_size=3,
+                early_stopping=True,
+                decoder_start_token_id=model.config.eos_token_id,
+            )
+            summ = [tokenizer.decode(g, skip_special_tokens=True, clean_up_tokenization_spaces=False) for g in summaries]
+
+            # store the results
+            summ_l.append(summ)
+
+        # restore order
+
+        flat_summ_l = [item for sublist in summ_l for item in sublist]
+
+        # create dataframe results
+        summary_batch = pd.DataFrame(zip(flat_summ_l, length_sorted_idx),
+                                    columns=['summary', 'original_idx'])
+        summary_batch['original_idx'] = summary_batch['original_idx'].astype(int)
+        summary_batch = summary_batch.sort_values(['original_idx'], ascending=True) \
+            .reset_index(drop=True)
+
+        # copy results in input dataframe
+        df['summary'] = summary_batch['summary']
+
+        return df
+
+    model_name= "bart-large-xsum"
+
+    model = BartForConditionalGeneration.from_pretrained(model_name).to(device)
+    tokenizer = BartTokenizer.from_pretrained(model_name)
+
+    res = generate_summaries(model, tokenizer,
+        df=ans_clean, batch_size = 4, device= DEFAULT_DEVICE)
 
 
 # end_ans.to_csv('res_albert_xx_large.csv', index=False)
@@ -266,39 +408,20 @@ if QA:
 
 #
 #
-# # TRY BART
-#
-#
-# import argparse
-# from pathlib import Path
-#
-# import torch
-# from tqdm import tqdm
-#
-# from transformers import BartForConditionalGeneration, BartTokenizer
-#
-#
-# DEFAULT_DEVICE = "cpu"
-#
-#
-# def chunks(lst, n):
-#     """Yield successive n-sized chunks from lst."""
-#     for i in range(0, len(lst), n):
-#         yield lst[i : i + n]
-#
-#
-# def generate_summaries(
-#     examples: list,  model_name: str = "bart-large-cnn", batch_size: int = 8, device: str = DEFAULT_DEVICE
-# ):
-#
-#     model = BartForConditionalGeneration.from_pretrained(model_name).to(device)
-#     tokenizer = BartTokenizer.from_pretrained(model_name)
+
+# def generate_summaries(model, tokenizer,
+#     examples: list, batch_size: int = 8, device: str = DEFAULT_DEVICE,
+#     max_length_input: int = 512):
 #
 #     max_length = 100
 #     min_length = 30
 #
 #     for batch in tqdm(list(chunks(examples, batch_size))):
-#         dct = tokenizer.batch_encode_plus(batch, max_length=1024, return_tensors="pt", pad_to_max_length=True)
+#         dct = tokenizer.batch_encode_plus(batch, max_length=max_length_input, return_tensors="pt", pad_to_max_length=True)
+#
+#         # tokenizer.decode(
+#         #     dct['input_ids'].squeeze())
+#
 #         t = time()
 #         summaries = model.generate(
 #             input_ids=dct["input_ids"].to(device),
@@ -317,19 +440,3 @@ if QA:
 #         print((time() - t) * 1000)
 #
 #         return dec
-#
-#
-# model_name= "bart-large-xsum"
-# model_name= "bart-large-cnn"
-#
-# res = generate_summaries(
-#     examples=[ans['title_abstr'][1]], model_name= model_name, batch_size = 8, device= DEFAULT_DEVICE)
-#
-# print(res)
-#
-# len(ans['title_abstr'][1].split())
-#
-# model= "bart-large-xsum"
-# tokenizer = AutoTokenizer.from_pretrained("bart-large-xsum")
-# BartTokenizer.from_pretrained("bart-large-xsum")
-# model = AutoModelWithLMHead.from_pretrained("bart-large-xsum")
